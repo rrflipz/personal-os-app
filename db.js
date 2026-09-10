@@ -13,11 +13,14 @@ const path = require('path');
 const DB_PATH = path.join(__dirname, 'data', 'users.json');
 
 function ensureDbFile() {
+  const dataDir = path.join(__dirname, 'data');
+  if (!fs.existsSync(dataDir)) {
+    fs.mkdirSync(dataDir, { recursive: true });
+  }
   if (!fs.existsSync(DB_PATH)) {
     fs.writeFileSync(DB_PATH, JSON.stringify({ users: [] }, null, 2));
   }
 }
-
 function readUsers() {
   ensureDbFile();
   const raw = fs.readFileSync(DB_PATH, 'utf-8');
