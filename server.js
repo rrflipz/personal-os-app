@@ -1,0 +1,289 @@
+// server.js
+//
+// This is the whole backend. Read it top to bottom -- it's organized
+// as: setup -> auth helpers -> auth routes -> chat route -> payment routes.
+//
+// The one rule this file exists to enforce: the Anthropic API key
+// NEVER goes to the browser. Every chat message goes user -> our
+// server -> Anthropic -> our server -> user. That's what makes the
+// paywall actually enforceable (a browser-only version can't gate
+// anything, since anyone can just read the key out of the page source).
+
+require('dotenv').config();
+const express = require('express');
+const cors = require('cors');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
+const path = require('path');
+const Stripe = require('stripe');
+const db = require('./db');
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+const JWT_SECRET = process.env.JWT_SECRET;
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY;
+const STRIPE_PRICE_ID = process.env.STRIPE_PRICE_ID;
+const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET;
+const CLIENT_URL = process.env.CLIENT_URL || `http://localhost:${PORT}`;
+const FREE_MESSAGE_LIMIT = parseInt(process.env.FREE_MESSAGE_LIMIT || '15', 10);
+
+if (!JWT_SECRET || !ANTHROPIC_API_KEY) {
+  console.error('Missing JWT_SECRET or ANTHROPIC_API_KEY in your .env file. See .env.example.');
+  process.exit(1);
+}
+
+const stripe = STRIPE_SECRET_KEY ? new Stripe(STRIPE_SECRET_KEY, { apiVersion: '2026-08-26.dahlia' }) : null;
+
+// --- Stripe webhook needs the RAW body, so it must be registered
+// before express.json() runs on everything else. ---
+app.post('/api/stripe-webhook', express.raw({ type: 'application/json' }), (req, res) => {
+  if (!stripe || !STRIPE_WEBHOOK_SECRET) {
+    return res.status(400).send('Stripe not configured');
+  }
+  let event;
+  try {
+    event = stripe.webhooks.constructEvent(req.body, req.headers['stripe-signature'], STRIPE_WEBHOOK_SECRET);
+  } catch (err) {
+    console.error('Webhook signature check failed:', err.message);
+    return res.status(400).send(`Webhook Error: ${err.message}`);
+  }
+
+  if (event.type === 'checkout.session.completed') {
+    const session = event.data.object;
+    const userId = session.client_reference_id;
+    if (userId) {
+      db.updateUser(userId, {
+        isPro: true,
+        stripeCustomerId: session.customer,
+        stripeSubscriptionId: session.subscription,
+      });
+    }
+  }
+
+  if (event.type === 'customer.subscription.deleted') {
+    const subscription = event.data.object;
+    const users = require('./db');
+    // find the user with this subscription id and revoke access
+    const all = JSON.parse(require('fs').readFileSync(path.join(__dirname, 'data', 'users.json'), 'utf-8')).users;
+    const match = all.find(u => u.stripeSubscriptionId === subscription.id);
+    if (match) {
+      db.updateUser(match.id, { isPro: false });
+    }
+  }
+
+  res.json({ received: true });
+});
+
+app.use(cors());
+app.use(express.json());
+app.use(express.static(path.join(__dirname, 'public')));
+
+// ---------- Auth helpers ----------
+
+function signToken(user) {
+  return jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: '30d' });
+}
+
+function authMiddleware(req, res, next) {
+  const header = req.headers.authorization || '';
+  const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+  if (!token) return res.status(401).json({ error: 'Not logged in.' });
+  try {
+    const payload = jwt.verify(token, JWT_SECRET);
+    const user = db.findUserById(payload.id);
+    if (!user) return res.status(401).json({ error: 'Account not found.' });
+    req.user = user;
+    next();
+  } catch (err) {
+    return res.status(401).json({ error: 'Session expired, please log in again.' });
+  }
+}
+
+function publicUser(user) {
+  // never send the password hash or internal ids to the browser
+  return {
+    email: user.email,
+    isPro: user.isPro,
+    freeMessagesUsed: user.freeMessagesUsed,
+    freeMessageLimit: FREE_MESSAGE_LIMIT,
+    profile: user.profile,
+  };
+}
+
+// ---------- Auth routes ----------
+
+app.post('/api/signup', async (req, res) => {
+  const { email, password } = req.body;
+  if (!email || !password || password.length < 8) {
+    return res.status(400).json({ error: 'Email and an 8+ character password are required.' });
+  }
+  if (db.findUserByEmail(email)) {
+    return res.status(409).json({ error: 'An account with that email already exists.' });
+  }
+  const passwordHash = await bcrypt.hash(password, 10);
+  const user = db.createUser({
+    id: crypto.randomUUID(),
+    email,
+    passwordHash,
+    isPro: false,
+    freeMessagesUsed: 0,
+    profile: { archetype: null, learning: null, strengths: null, focus: null },
+    conversation: [],
+    createdAt: new Date().toISOString(),
+  });
+  res.json({ token: signToken(user), user: publicUser(user) });
+});
+
+app.post('/api/login', async (req, res) => {
+  const { email, password } = req.body;
+  const user = db.findUserByEmail(email || '');
+  if (!user) return res.status(401).json({ error: 'Incorrect email or password.' });
+  const ok = await bcrypt.compare(password || '', user.passwordHash);
+  if (!ok) return res.status(401).json({ error: 'Incorrect email or password.' });
+  res.json({ token: signToken(user), user: publicUser(user) });
+});
+
+app.get('/api/me', authMiddleware, (req, res) => {
+  res.json({ user: publicUser(req.user), conversation: req.user.conversation });
+});
+
+// ---------- Chat route (this is where the paywall is enforced) ----------
+
+const SYSTEM_PROMPT = `You are "Personal OS" — an adaptive AI life-navigation guide. You are not a generic life coach and you never sound like one.
+
+CORE PHILOSOPHY (never deviate):
+- You guide, you do not control. You teach people HOW to think, never WHAT to think.
+- You amplify the person's own ideas rather than replacing their agency. Your goal is that they become less dependent on you over time, not more.
+- You are non-judgmental. Life isn't perfect, schedules slip, people contradict themselves — that's normal, not a failure to flag.
+- Onboarding is adaptive, not a form. Ask ONE thing at a time, and let what they say shape your next question. Never dump a list of questions on them.
+- You are trying to learn the person's archetype: their learning style (visual/analytical/kinesthetic), whether they need structure or freedom, whether they're creative or systematic, and how their mind naturally works.
+- You cover: financial literacy, purpose/path discovery, daily organization (without rigidity), mindset and limiting beliefs, personal brand, and critical thinking — but only bring these up when the conversation naturally opens the door, never as a checklist.
+
+FRAMEWORK YOU DRAW ON (use naturally, don't recite):
+Self-discovery angle: What occupations exist that they've never considered? What are their strengths and weaknesses? Who are they trying to become? What direction are they taking? What have they actually done? What do they pursue naturally without being told to?
+Systems-thinking angle (domain-agnostic — applies to a teacher, tradesman, artist, or entrepreneur equally): Why would someone trust them over the next person? What value do they actually offer? What tools would let them leverage their time? How do they build something that scales — training others, incentives, retention, what makes people stay vs. chase quick money?
+Underlying belief: no path is mediocre if the person understands why they're doing it. A teacher building a legacy is exactly as legitimate and scalable as an entrepreneur. Your job is to help them see the systems and leverage points in whatever THEY want to build — not to push them toward business/hustle culture.
+
+CONVERSATION STYLE:
+- Warm, direct, a little sharp — like someone who sees patterns clearly and respects the person enough to be honest rather than vague and encouraging.
+- Never therapy-speak, never corporate-coach language. Short paragraphs. Plain words.
+- End almost every message with exactly one question that moves the conversation forward.
+- If they share something vulnerable or stuck, acknowledge it plainly in one sentence, don't linger on validation, then move toward the next useful question.
+
+PROFILE TRACKING (mechanical, not conversational):
+After you have learned something new and durable about the person in a turn, append a hidden block at the very end of your reply, after your visible message, in EXACTLY this format on its own line:
+<<<PROFILE>>>{"archetype":"...", "learning":"...", "strengths":"...", "focus":"..."}<<<END>>>
+Only include the keys you have new information for — omit keys you have nothing new to say about. Keep each value under 12 words, written as a plain descriptive phrase (not a full sentence, no leading capital needed). This block is stripped before the person sees your message, so it must add nothing they need to read — never reference it in your visible text. Do not include this block if you learned nothing new that turn.`;
+
+function extractProfileBlock(text) {
+  const match = text.match(/<<<PROFILE>>>([\s\S]*?)<<<END>>>/);
+  if (!match) return { clean: text, updates: null };
+  const clean = text.replace(match[0], '').trim();
+  let updates = null;
+  try {
+    updates = JSON.parse(match[1].trim());
+  } catch (e) {
+    updates = null;
+  }
+  return { clean, updates };
+}
+
+app.post('/api/chat', authMiddleware, async (req, res) => {
+  const user = req.user;
+  const { message } = req.body;
+
+  const isFirstMessage = !message;
+  if (!isFirstMessage && !user.isPro && user.freeMessagesUsed >= FREE_MESSAGE_LIMIT) {
+    return res.status(402).json({
+      error: 'paywall',
+      message: `You've used your ${FREE_MESSAGE_LIMIT} free messages. Upgrade to keep going.`,
+    });
+  }
+
+  const conversation = user.conversation || [];
+  const userTurn = isFirstMessage
+    ? { role: 'user', content: '[Begin the session. Open the conversation yourself as instructed.]' }
+    : { role: 'user', content: message };
+  const messagesToSend = [...conversation, userTurn];
+
+  try {
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 1000,
+        system: SYSTEM_PROMPT,
+        messages: messagesToSend,
+      }),
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      console.error('Anthropic API error:', errText);
+      return res.status(502).json({ error: 'The AI service had a problem. Try again in a moment.' });
+    }
+
+    const data = await response.json();
+    const textBlock = data.content.find(b => b.type === 'text');
+    const rawText = textBlock ? textBlock.text : '';
+    const { clean, updates } = extractProfileBlock(rawText);
+
+    const updatedProfile = updates ? { ...user.profile, ...updates } : user.profile;
+    const updatedConversation = [...messagesToSend, { role: 'assistant', content: rawText }];
+
+    const updates_to_user = {
+      conversation: updatedConversation,
+      profile: updatedProfile,
+    };
+    if (!isFirstMessage && !user.isPro) {
+      updates_to_user.freeMessagesUsed = user.freeMessagesUsed + 1;
+    }
+    const saved = db.updateUser(user.id, updates_to_user);
+
+    res.json({
+      reply: clean,
+      profile: updatedProfile,
+      freeMessagesUsed: saved.freeMessagesUsed,
+      freeMessageLimit: FREE_MESSAGE_LIMIT,
+      isPro: saved.isPro,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Something went wrong talking to the AI service.' });
+  }
+});
+
+// ---------- Payment routes ----------
+
+app.post('/api/create-checkout-session', authMiddleware, async (req, res) => {
+  if (!stripe || !STRIPE_PRICE_ID) {
+    return res.status(400).json({ error: 'Payments are not configured yet.' });
+  }
+  try {
+    const session = await stripe.checkout.sessions.create({
+      mode: 'subscription',
+      line_items: [{ price: STRIPE_PRICE_ID, quantity: 1 }],
+      client_reference_id: req.user.id,
+      customer_email: req.user.email,
+      billing_address_collection: 'required',
+      success_url: `${CLIENT_URL}/?upgraded=true`,
+      cancel_url: `${CLIENT_URL}/?upgraded=false`,
+    });
+    res.json({ url: session.url });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Could not start checkout.' });
+  }
+});
+
+app.listen(PORT, () => {
+  console.log(`Personal OS server running on http://localhost:${PORT}`);
+});

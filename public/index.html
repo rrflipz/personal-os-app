@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Personal OS</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,500&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg: #E9E4D8; --surface: #FFFFFF; --surface-2: #F2EEE3;
+    --ink: #23291F; --ink-soft: #5B6155;
+    --moss: #4B5C3E; --moss-dim: #7C8A6C; --brass: #A67C3D;
+    --line: #D3CBBA; --line-soft: #DEDACD;
+  }
+  *{box-sizing:border-box;}
+  html,body{height:100%;}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font-family:'IBM Plex Sans', sans-serif;
+    display:flex; justify-content:center; align-items:stretch; min-height:100vh;
+  }
+  .hidden{ display:none !important; }
+
+  /* ---------- Auth screen ---------- */
+  .auth-wrap{
+    width:100%; max-width:420px; margin:auto; padding:40px 24px;
+  }
+  .auth-wordmark{
+    font-family:'Fraunces', serif; font-weight:500; font-size:30px; margin:0 0 6px;
+  }
+  .auth-wordmark em{ font-style:italic; color:var(--moss); }
+  .auth-sub{ color:var(--ink-soft); font-size:14.5px; margin:0 0 28px; line-height:1.5; }
+  .auth-form{ display:flex; flex-direction:column; gap:12px; }
+  .auth-form input{
+    padding:12px 14px; border:1px solid var(--line); border-radius:10px;
+    font-size:14.5px; font-family:'IBM Plex Sans', sans-serif; background:var(--surface);
+  }
+  .auth-form input:focus{ outline:none; border-color:var(--moss-dim); }
+  .auth-form button{
+    background:var(--moss); color:#fff; border:none; border-radius:10px;
+    padding:12px 20px; font-size:14.5px; font-weight:500; cursor:pointer; margin-top:4px;
+  }
+  .auth-form button:hover{ background:#3d4b32; }
+  .auth-toggle{
+    margin-top:18px; font-size:13.5px; color:var(--ink-soft); text-align:center;
+  }
+  .auth-toggle a{ color:var(--moss); cursor:pointer; text-decoration:underline; }
+  .auth-error{ color:#a14a3a; font-size:13.5px; min-height:18px; }
+
+  /* ---------- App shell (same as prototype) ---------- */
+  .app{
+    width:100%; max-width:1180px; display:grid;
+    grid-template-columns: 1fr 320px; min-height:100vh;
+  }
+  @media (max-width: 860px){
+    .app{ grid-template-columns: 1fr; }
+    .profile-pane{ order:2; border-left:none; border-top:1px solid var(--line); }
+    .chat-pane{ order:1; }
+  }
+  .chat-pane{ display:flex; flex-direction:column; min-height:100vh; }
+  .chat-header{ padding:24px 32px 16px; border-bottom:1px solid var(--line); display:flex; justify-content:space-between; align-items:flex-start; gap:16px; }
+  .status-line{ font-family:'IBM Plex Mono', monospace; font-size:11px; color:var(--moss-dim); margin-bottom:10px; display:flex; align-items:center; gap:8px; }
+  .status-dot{ width:6px;height:6px;border-radius:50%; background:var(--moss); display:inline-block; animation:pulse 2.4s ease-in-out infinite; }
+  @keyframes pulse{ 0%,100%{opacity:1;} 50%{opacity:0.35;} }
+  .wordmark{ font-family:'Fraunces', serif; font-weight:500; font-size:26px; margin:0; letter-spacing:-0.01em; }
+  .wordmark em{ font-style:italic; color:var(--moss); }
+  .tagline{ margin:6px 0 0; font-size:14px; color:var(--ink-soft); max-width:44ch; line-height:1.5; }
+  .header-actions{ display:flex; flex-direction:column; align-items:flex-end; gap:8px; }
+  .usage-pill{ font-family:'IBM Plex Mono', monospace; font-size:11px; color:var(--ink-soft); white-space:nowrap; }
+  .upgrade-btn{
+    background:var(--brass); color:#fff; border:none; border-radius:8px;
+    padding:7px 14px; font-size:12.5px; font-weight:500; cursor:pointer; white-space:nowrap;
+  }
+  .upgrade-btn:hover{ opacity:0.9; }
+  .logout-link{ font-size:11.5px; color:var(--ink-soft); text-decoration:underline; cursor:pointer; background:none; border:none; padding:0; }
+
+  .messages{ flex:1; overflow-y:auto; padding:24px 32px; display:flex; flex-direction:column; gap:18px; }
+  .msg{ max-width:74ch; line-height:1.6; font-size:15px; white-space:pre-wrap; }
+  .msg.agent .label{ display:block; font-family:'IBM Plex Mono', monospace; font-size:11px; color:var(--moss); margin-bottom:6px; }
+  .msg.user{ align-self:flex-end; background:var(--surface); border:1px solid var(--line); border-radius:14px 14px 2px 14px; padding:12px 16px; }
+  .msg.agent{ align-self:flex-start; }
+  .msg.system-note{ align-self:center; font-size:12.5px; color:var(--ink-soft); font-style:italic; }
+  .thinking{ align-self:flex-start; display:flex; gap:5px; padding:4px 0; }
+  .thinking span{ width:6px;height:6px;border-radius:50%; background:var(--moss-dim); animation:bounce 1.2s infinite; }
+  .thinking span:nth-child(2){ animation-delay:0.15s; }
+  .thinking span:nth-child(3){ animation-delay:0.3s; }
+  @keyframes bounce{ 0%,80%,100%{transform:translateY(0);opacity:0.4;} 40%{transform:translateY(-4px);opacity:1;} }
+
+  .paywall{
+    align-self:center; max-width:52ch; text-align:center; background:var(--surface);
+    border:1px solid var(--line); border-radius:14px; padding:22px 24px; margin-top:8px;
+  }
+  .paywall h3{ font-family:'Fraunces', serif; font-weight:500; margin:0 0 8px; font-size:18px; }
+  .paywall p{ font-size:13.5px; color:var(--ink-soft); margin:0 0 16px; line-height:1.5; }
+  .paywall button{
+    background:var(--brass); color:#fff; border:none; border-radius:9px;
+    padding:11px 22px; font-size:14px; font-weight:500; cursor:pointer;
+  }
+
+  .composer{ border-top:1px solid var(--line); padding:16px 32px 22px; display:flex; gap:10px; align-items:flex-end; }
+  .composer textarea{
+    flex:1; resize:none; border:1px solid var(--line); background:var(--surface);
+    border-radius:10px; padding:12px 14px; font-family:'IBM Plex Sans', sans-serif;
+    font-size:14.5px; color:var(--ink); line-height:1.5; max-height:140px;
+  }
+  .composer textarea:focus{ outline:none; border-color:var(--moss-dim); }
+  .composer button{
+    background:var(--moss); color:#fff; border:none; border-radius:10px;
+    padding:12px 20px; font-size:14px; font-weight:500; cursor:pointer;
+  }
+  .composer button:hover{ background:#3d4b32; }
+  .composer button:disabled{ background:var(--line); color:var(--ink-soft); cursor:not-allowed; }
+
+  .profile-pane{ background:var(--surface-2); border-left:1px solid var(--line); padding:26px 24px; display:flex; flex-direction:column; gap:20px; }
+  .profile-title{ font-family:'Fraunces', serif; font-size:16px; font-weight:500; margin:0 0 2px; }
+  .profile-sub{ font-size:12.5px; color:var(--ink-soft); margin:0; line-height:1.5; }
+  .field{ border-top:1px solid var(--line-soft); padding-top:14px; }
+  .field-label{ font-size:12px; color:var(--ink-soft); margin-bottom:6px; font-weight:500; }
+  .field-value{ font-size:14px; line-height:1.5; }
+  .field-value.empty{ color:#B7B0A0; font-style:italic; }
+  .field-value.filled{ animation:settle 0.5s ease; }
+  @keyframes settle{ from{background:rgba(166,124,61,0.18);} to{background:transparent;} }
+</style>
+</head>
+<body>
+
+<!-- AUTH SCREEN -->
+<div class="auth-wrap" id="authWrap">
+  <h1 class="auth-wordmark">Your <em>Personal OS</em></h1>
+  <p class="auth-sub">Not a coach with an agenda — a system that learns how your mind works, then helps you build the one that's yours.</p>
+  <form class="auth-form" id="authForm">
+    <input type="email" id="authEmail" placeholder="Email" required autocomplete="email">
+    <input type="password" id="authPassword" placeholder="Password (8+ characters)" required autocomplete="current-password">
+    <button type="submit" id="authSubmit">Log in</button>
+  </form>
+  <p class="auth-error" id="authError"></p>
+  <p class="auth-toggle" id="authToggle">New here? <a id="authToggleLink">Create an account</a></p>
+</div>
+
+<!-- APP -->
+<div class="app hidden" id="appWrap">
+  <div class="chat-pane">
+    <div class="chat-header">
+      <div>
+        <div class="status-line"><span class="status-dot"></span>system.listening</div>
+        <h1 class="wordmark">Your <em>Personal OS</em></h1>
+        <p class="tagline">Not a coach with an agenda — a system that learns how your mind works.</p>
+      </div>
+      <div class="header-actions">
+        <span class="usage-pill" id="usagePill"></span>
+        <button class="upgrade-btn hidden" id="upgradeBtn">Upgrade</button>
+        <button class="logout-link" id="logoutBtn">Log out</button>
+      </div>
+    </div>
+
+    <div class="messages" id="messages"></div>
+
+    <div class="composer">
+      <textarea id="input" rows="1" placeholder="Say whatever's on your mind..."></textarea>
+      <button id="sendBtn">Send</button>
+    </div>
+  </div>
+
+  <div class="profile-pane">
+    <div>
+      <p class="profile-title">System profile</p>
+      <p class="profile-sub">Fills in as the conversation goes.</p>
+    </div>
+    <div class="field"><div class="field-label">Archetype forming</div><div class="field-value empty" id="f-archetype">still learning</div></div>
+    <div class="field"><div class="field-label">How you think best</div><div class="field-value empty" id="f-learning">still learning</div></div>
+    <div class="field"><div class="field-label">Natural strengths</div><div class="field-value empty" id="f-strengths">still learning</div></div>
+    <div class="field"><div class="field-label">What you're circling</div><div class="field-value empty" id="f-focus">still learning</div></div>
+  </div>
+</div>
+
+<script>
+const API = ''; // same-origin, since the frontend is served by the same server
+let token = localStorage.getItem('personalos_token') || null;
+let isSignupMode = false;
+
+// ---------- Auth screen wiring ----------
+const authWrap = document.getElementById('authWrap');
+const appWrap = document.getElementById('appWrap');
+const authForm = document.getElementById('authForm');
+const authError = document.getElementById('authError');
+const authSubmit = document.getElementById('authSubmit');
+const authToggleLink = document.getElementById('authToggleLink');
+const authToggle = document.getElementById('authToggle');
+
+authToggleLink.addEventListener('click', () => {
+  isSignupMode = !isSignupMode;
+  authSubmit.textContent = isSignupMode ? 'Create account' : 'Log in';
+  authToggle.innerHTML = isSignupMode
+    ? `Already have an account? <a id="authToggleLink2">Log in</a>`
+    : `New here? <a id="authToggleLink2">Create an account</a>`;
+  document.getElementById('authToggleLink2').addEventListener('click', () => authToggleLink.dispatchEvent(new Event('click')));
+});
+
+authForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  authError.textContent = '';
+  const email = document.getElementById('authEmail').value.trim();
+  const password = document.getElementById('authPassword').value;
+  const endpoint = isSignupMode ? '/api/signup' : '/api/login';
+  try {
+    const res = await fetch(API + endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password })
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      authError.textContent = data.error || 'Something went wrong.';
+      return;
+    }
+    token = data.token;
+    localStorage.setItem('personalos_token', token);
+    enterApp(true);
+  } catch (err) {
+    authError.textContent = 'Could not reach the server.';
+  }
+});
+
+// ---------- App state ----------
+let usage = { isPro: false, freeMessagesUsed: 0, freeMessageLimit: 15 };
+
+const messagesEl = document.getElementById('messages');
+const inputEl = document.getElementById('input');
+const sendBtn = document.getElementById('sendBtn');
+const usagePill = document.getElementById('usagePill');
+const upgradeBtn = document.getElementById('upgradeBtn');
+const logoutBtn = document.getElementById('logoutBtn');
+
+const fieldMap = {
+  archetype: document.getElementById('f-archetype'),
+  learning: document.getElementById('f-learning'),
+  strengths: document.getElementById('f-strengths'),
+  focus: document.getElementById('f-focus'),
+};
+
+function authHeaders() {
+  return { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token };
+}
+
+function addMessage(role, text) {
+  const div = document.createElement('div');
+  if (role === 'agent') {
+    div.className = 'msg agent';
+    div.innerHTML = '<span class="label">personal os</span>' + escapeHtml(text);
+  } else if (role === 'user') {
+    div.className = 'msg user';
+    div.textContent = text;
+  } else {
+    div.className = 'msg system-note';
+    div.textContent = text;
+  }
+  messagesEl.appendChild(div);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+  return div;
+}
+function escapeHtml(str) {
+  const d = document.createElement('div');
+  d.textContent = str;
+  return d.innerHTML;
+}
+function showThinking() {
+  const div = document.createElement('div');
+  div.className = 'thinking';
+  div.id = 'thinkingIndicator';
+  div.innerHTML = '<span></span><span></span><span></span>';
+  messagesEl.appendChild(div);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+function hideThinking() {
+  const el = document.getElementById('thinkingIndicator');
+  if (el) el.remove();
+}
+
+function updateProfile(profile) {
+  Object.keys(fieldMap).forEach(key => {
+    if (!profile || !profile[key]) return;
+    const el = fieldMap[key];
+    if (el.textContent === profile[key]) return;
+    el.textContent = profile[key];
+    el.classList.remove('empty');
+    el.classList.add('filled');
+    setTimeout(() => el.classList.remove('filled'), 500);
+  });
+}
+
+function updateUsagePill() {
+  if (usage.isPro) {
+    usagePill.textContent = 'pro — unlimited';
+    upgradeBtn.classList.add('hidden');
+  } else {
+    const remaining = Math.max(0, usage.freeMessageLimit - usage.freeMessagesUsed);
+    usagePill.textContent = `${remaining} free messages left`;
+    upgradeBtn.classList.remove('hidden');
+  }
+}
+
+function showPaywall(text) {
+  const div = document.createElement('div');
+  div.className = 'paywall';
+  div.innerHTML = `<h3>You've hit the free limit</h3><p>${escapeHtml(text)}</p><button id="paywallUpgradeBtn">Upgrade to keep going</button>`;
+  messagesEl.appendChild(div);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+  document.getElementById('paywallUpgradeBtn').addEventListener('click', startCheckout);
+}
+
+async function startCheckout() {
+  try {
+    const res = await fetch(API + '/api/create-checkout-session', { method: 'POST', headers: authHeaders() });
+    const data = await res.json();
+    if (data.url) {
+      window.location.href = data.url;
+    } else {
+      addMessage('system-note', data.error || 'Payments are not set up yet.');
+    }
+  } catch (err) {
+    addMessage('system-note', 'Could not start checkout.');
+  }
+}
+upgradeBtn.addEventListener('click', startCheckout);
+
+async function sendChat(message) {
+  showThinking();
+  sendBtn.disabled = true;
+  try {
+    const res = await fetch(API + '/api/chat', {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify(message ? { message } : {})
+    });
+    const data = await res.json();
+    hideThinking();
+    if (res.status === 402) {
+      showPaywall(data.message || 'Upgrade to keep going.');
+      return;
+    }
+    if (!res.ok) {
+      addMessage('system-note', data.error || 'Something went wrong.');
+      return;
+    }
+    addMessage('agent', data.reply);
+    updateProfile(data.profile);
+    usage.isPro = data.isPro;
+    usage.freeMessagesUsed = data.freeMessagesUsed;
+    usage.freeMessageLimit = data.freeMessageLimit;
+    updateUsagePill();
+  } catch (err) {
+    hideThinking();
+    addMessage('system-note', 'Connection hiccup — try sending that again.');
+  }
+  sendBtn.disabled = false;
+}
+
+sendBtn.addEventListener('click', () => {
+  const text = inputEl.value.trim();
+  if (!text) return;
+  addMessage('user', text);
+  inputEl.value = '';
+  inputEl.style.height = 'auto';
+  sendChat(text);
+});
+inputEl.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    sendBtn.click();
+  }
+});
+inputEl.addEventListener('input', () => {
+  inputEl.style.height = 'auto';
+  inputEl.style.height = Math.min(inputEl.scrollHeight, 140) + 'px';
+});
+
+logoutBtn.addEventListener('click', () => {
+  localStorage.removeItem('personalos_token');
+  token = null;
+  location.reload();
+});
+
+async function enterApp(isNewSession) {
+  authWrap.classList.add('hidden');
+  appWrap.classList.remove('hidden');
+  try {
+    const res = await fetch(API + '/api/me', { headers: authHeaders() });
+    if (!res.ok) throw new Error('session invalid');
+    const data = await res.json();
+    usage.isPro = data.user.isPro;
+    usage.freeMessagesUsed = data.user.freeMessagesUsed;
+    usage.freeMessageLimit = data.user.freeMessageLimit;
+    updateUsagePill();
+    updateProfile(data.user.profile);
+
+    if (data.conversation && data.conversation.length > 0) {
+      data.conversation.forEach(turn => {
+        if (turn.role === 'user' && turn.content.startsWith('[Begin the session')) return;
+        addMessage(turn.role === 'user' ? 'user' : 'agent', turn.content);
+      });
+    } else {
+      await sendChat(null); // triggers the agent's opening message
+    }
+  } catch (err) {
+    localStorage.removeItem('personalos_token');
+    location.reload();
+  }
+}
+
+if (token) {
+  enterApp(false);
+}
+</script>
+
+</body>
+</html>
