@@ -1,0 +1,24 @@
+{
+  "name": "Personal OS",
+  "short_name": "Personal OS",
+  "description": "An adaptive AI life-navigation agent.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#E9E4D8",
+  "theme_color": "#4B5C3E",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
