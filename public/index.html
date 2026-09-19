@@ -124,12 +124,32 @@
   .field-value.empty{ color:#B7B0A0; font-style:italic; }
   .field-value.filled{ animation:settle 0.5s ease; }
   @keyframes settle{ from{background:rgba(166,124,61,0.18);} to{background:transparent;} }
+
+  /* ---------- Boot / loading screen ---------- */
+  .boot-wrap{
+    width:100%; display:flex; flex-direction:column; align-items:center; justify-content:center;
+    gap:16px; min-height:100vh;
+  }
+  .boot-wordmark{ font-family:'Fraunces', serif; font-weight:500; font-size:26px; margin:0; }
+  .boot-wordmark em{ font-style:italic; color:var(--moss); }
+  .boot-spinner{
+    width:22px; height:22px; border-radius:50%;
+    border:2.5px solid var(--line); border-top-color:var(--moss);
+    animation:spin 0.8s linear infinite;
+  }
+  @keyframes spin{ to{ transform:rotate(360deg); } }
 </style>
 </head>
 <body>
 
+<!-- BOOT / LOADING SCREEN (shown until we know whether you're logged in) -->
+<div class="boot-wrap" id="bootWrap">
+  <h1 class="boot-wordmark">Your <em>Personal OS</em></h1>
+  <div class="boot-spinner"></div>
+</div>
+
 <!-- AUTH SCREEN -->
-<div class="auth-wrap" id="authWrap">
+<div class="auth-wrap hidden" id="authWrap">
   <h1 class="auth-wordmark">Your <em>Personal OS</em></h1>
   <p class="auth-sub">Not a coach with an agenda — a system that learns how your mind works, then helps you build the one that's yours.</p>
   <form class="auth-form" id="authForm">
@@ -183,6 +203,7 @@ let token = localStorage.getItem('personalos_token') || null;
 let isSignupMode = false;
 
 // ---------- Auth screen wiring ----------
+const bootWrap = document.getElementById('bootWrap');
 const authWrap = document.getElementById('authWrap');
 const appWrap = document.getElementById('appWrap');
 const authForm = document.getElementById('authForm');
@@ -385,8 +406,8 @@ logoutBtn.addEventListener('click', () => {
 });
 
 async function enterApp(isNewSession) {
-  authWrap.classList.add('hidden');
-  appWrap.classList.remove('hidden');
+  // Note: bootWrap stays visible (not appWrap) until we actually have data,
+  // so a slow /api/me call never shows an empty-looking chat screen.
   try {
     const res = await fetch(API + '/api/me', { headers: authHeaders() });
     if (!res.ok) throw new Error('session invalid');
@@ -396,6 +417,9 @@ async function enterApp(isNewSession) {
     usage.freeMessageLimit = data.user.freeMessageLimit;
     updateUsagePill();
     updateProfile(data.user.profile);
+
+    bootWrap.classList.add('hidden');
+    appWrap.classList.remove('hidden');
 
     if (data.conversation && data.conversation.length > 0) {
       data.conversation.forEach(turn => {
@@ -407,12 +431,16 @@ async function enterApp(isNewSession) {
     }
   } catch (err) {
     localStorage.removeItem('personalos_token');
-    location.reload();
+    bootWrap.classList.add('hidden');
+    authWrap.classList.remove('hidden');
   }
 }
 
 if (token) {
   enterApp(false);
+} else {
+  bootWrap.classList.add('hidden');
+  authWrap.classList.remove('hidden');
 }
 </script>
 
