@@ -38,9 +38,17 @@ async function ensureSchema() {
       conversation JSONB NOT NULL DEFAULT '[]'::jsonb,
       stripe_customer_id TEXT,
       stripe_subscription_id TEXT,
+      reset_token_hash TEXT,
+      reset_token_expires TIMESTAMPTZ,
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
   `);
+  // These two are added separately (rather than only in the CREATE TABLE
+  // above) so they also get added to a users table that already existed
+  // before password reset was built -- CREATE TABLE IF NOT EXISTS does
+  // nothing to a table that's already there.
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token_hash TEXT;`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token_expires TIMESTAMPTZ;`);
 }
 
 // Run once at startup. If this fails (bad connection string, DB not
@@ -63,6 +71,8 @@ function rowToUser(row) {
     conversation: row.conversation,
     stripeCustomerId: row.stripe_customer_id,
     stripeSubscriptionId: row.stripe_subscription_id,
+    resetTokenHash: row.reset_token_hash,
+    resetTokenExpires: row.reset_token_expires,
     createdAt: row.created_at,
   };
 }
@@ -82,6 +92,12 @@ async function findUserById(id) {
 async function findUserByStripeSubscriptionId(subscriptionId) {
   await schemaReady;
   const { rows } = await pool.query('SELECT * FROM users WHERE stripe_subscription_id = $1', [subscriptionId]);
+  return rowToUser(rows[0]);
+}
+
+async function findUserByResetTokenHash(hash) {
+  await schemaReady;
+  const { rows } = await pool.query('SELECT * FROM users WHERE reset_token_hash = $1', [hash]);
   return rowToUser(rows[0]);
 }
 
@@ -119,7 +135,9 @@ async function updateUser(id, updates) {
        profile = $6,
        conversation = $7,
        stripe_customer_id = $8,
-       stripe_subscription_id = $9
+       stripe_subscription_id = $9,
+       reset_token_hash = $10,
+       reset_token_expires = $11
      WHERE id = $1
      RETURNING *`,
     [
@@ -132,6 +150,8 @@ async function updateUser(id, updates) {
       JSON.stringify(merged.conversation || []),
       merged.stripeCustomerId || null,
       merged.stripeSubscriptionId || null,
+      merged.resetTokenHash || null,
+      merged.resetTokenExpires || null,
     ]
   );
   return rowToUser(rows[0]);
@@ -141,6 +161,7 @@ module.exports = {
   findUserByEmail,
   findUserById,
   findUserByStripeSubscriptionId,
+  findUserByResetTokenHash,
   createUser,
   updateUser,
 };

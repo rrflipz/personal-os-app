@@ -18,6 +18,7 @@ const crypto = require('crypto');
 const path = require('path');
 const Stripe = require('stripe');
 const rateLimit = require('express-rate-limit');
+const { Resend } = require('resend');
 const db = require('./db');
 
 const app = express();
@@ -30,6 +31,8 @@ const STRIPE_PRICE_ID = process.env.STRIPE_PRICE_ID;
 const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET;
 const CLIENT_URL = process.env.CLIENT_URL || `http://localhost:${PORT}`;
 const FREE_MESSAGE_LIMIT = parseInt(process.env.FREE_MESSAGE_LIMIT || '15', 10);
+const RESEND_API_KEY = process.env.RESEND_API_KEY;
+const EMAIL_FROM = process.env.EMAIL_FROM || 'Personal OS <noreply@getpersonalos.com>';
 
 if (!JWT_SECRET || !ANTHROPIC_API_KEY) {
   console.error('Missing JWT_SECRET or ANTHROPIC_API_KEY in your .env file. See .env.example.');
@@ -37,6 +40,10 @@ if (!JWT_SECRET || !ANTHROPIC_API_KEY) {
 }
 
 const stripe = STRIPE_SECRET_KEY ? new Stripe(STRIPE_SECRET_KEY, { apiVersion: '2026-08-26.dahlia' }) : null;
+// If RESEND_API_KEY isn't set, password reset silently no-ops (logs instead
+// of sending) rather than crashing the whole app -- handy for local dev
+// where you may not want to wire up real email.
+const resend = RESEND_API_KEY ? new Resend(RESEND_API_KEY) : null;
 
 // --- Stripe webhook needs the RAW body, so it must be registered
 // before express.json() runs on everything else. ---
@@ -183,6 +190,82 @@ app.post('/api/login', authLimiter, async (req, res) => {
 
 app.get('/api/me', authMiddleware, (req, res) => {
   res.json({ user: publicUser(req.user), conversation: req.user.conversation });
+});
+
+// ---------- Password reset ----------
+// We never store the raw reset token or email it in plain, recoverable form
+// beyond the link itself -- only a hash of it goes in the database, so
+// nobody who reads the database (or a backup of it) can use it to take over
+// an account. The link itself is the only place the real token exists,
+// and it expires in an hour.
+
+app.post('/api/forgot-password', authLimiter, async (req, res) => {
+  const { email } = req.body;
+  const genericResponse = { message: "If an account exists for that email, we've sent a reset link." };
+
+  const user = email ? await db.findUserByEmail(email) : null;
+  // Deliberately respond the same way whether or not the account exists --
+  // otherwise this endpoint becomes a way for anyone to check which emails
+  // have accounts on your app.
+  if (!user) return res.json(genericResponse);
+
+  const rawToken = crypto.randomBytes(32).toString('hex');
+  const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+  const expires = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
+
+  await db.updateUser(user.id, { resetTokenHash: tokenHash, resetTokenExpires: expires });
+
+  const resetLink = `${CLIENT_URL}/reset-password.html?token=${rawToken}`;
+
+  if (!resend) {
+    // No email service configured (e.g. local dev without RESEND_API_KEY) --
+    // log the link instead of failing, so you can still test the flow.
+    console.log(`[password reset] No RESEND_API_KEY set. Reset link for ${user.email}: ${resetLink}`);
+    return res.json(genericResponse);
+  }
+
+  try {
+    await resend.emails.send({
+      from: EMAIL_FROM,
+      to: user.email,
+      subject: 'Reset your Personal OS password',
+      html: `
+        <p>Someone (hopefully you) asked to reset the password on your Personal OS account.</p>
+        <p><a href="${resetLink}">Click here to set a new password</a>. This link expires in 1 hour.</p>
+        <p>If you didn't request this, you can safely ignore this email -- your password won't change.</p>
+      `,
+    });
+  } catch (err) {
+    console.error('Failed to send password reset email:', err);
+    // Still return the generic success response -- we don't want to leak
+    // to the caller whether sending failed, and the token is already saved
+    // so a retry (or you checking the Render logs) can still work.
+  }
+
+  res.json(genericResponse);
+});
+
+app.post('/api/reset-password', authLimiter, async (req, res) => {
+  const { token, newPassword } = req.body;
+  if (!token || !newPassword || newPassword.length < 8) {
+    return res.status(400).json({ error: 'A valid token and an 8+ character new password are required.' });
+  }
+
+  const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+  const user = await db.findUserByResetTokenHash(tokenHash);
+
+  if (!user || !user.resetTokenExpires || new Date(user.resetTokenExpires) < new Date()) {
+    return res.status(400).json({ error: 'That reset link is invalid or has expired. Request a new one.' });
+  }
+
+  const passwordHash = await bcrypt.hash(newPassword, 10);
+  await db.updateUser(user.id, {
+    passwordHash,
+    resetTokenHash: null,
+    resetTokenExpires: null,
+  });
+
+  res.json({ message: 'Your password has been reset. You can now log in.' });
 });
 
 // ---------- Chat route (this is where the paywall is enforced) ----------

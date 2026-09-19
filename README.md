@@ -6,10 +6,11 @@ An adaptive AI life-navigation agent with accounts, a free tier, and a paywall.
 
 ```
 personal-os-app/
-├── server.js          <- the whole backend: auth, chat, payments
-├── db.js              <- Postgres database layer (accounts, conversations)
-├── public/index.html  <- the whole frontend: login screen + chat UI
-├── .env.example       <- copy to .env and fill in real values
+├── server.js                    <- the whole backend: auth, chat, payments, password reset
+├── db.js                        <- Postgres database layer (accounts, conversations)
+├── public/index.html            <- the whole frontend: login screen + chat UI
+├── public/reset-password.html   <- the page a reset-password email link opens
+├── .env.example                 <- copy to .env and fill in real values
 └── package.json
 ```
 
@@ -85,14 +86,25 @@ General steps (Render as the example):
    point a live webhook at `https://your-domain.com/api/stripe-webhook`
    (Stripe dashboard → Developers → Webhooks → Add endpoint).
 
-## 4. Known limits worth knowing about (and fixing later, not day one)
+## 4. Password reset (Resend)
 
-- **No "forgot password" flow yet.** Fine to skip for launch, add later.
+Forgotten-password emails go out through [Resend](https://resend.com). You need:
+1. A Resend account with your domain added and verified (their dashboard walks
+   you through the DNS records).
+2. An API key from Resend, put in `.env` as `RESEND_API_KEY`.
+3. `EMAIL_FROM` in `.env` set to an address on your verified domain, e.g.
+   `"Personal OS <noreply@yourdomain.com>"`.
+
+Without `RESEND_API_KEY` set, the app doesn't crash -- it just logs the reset
+link to the console instead of emailing it, which is handy for local testing.
+
+## 5. Known limits worth knowing about (and fixing later, not day one)
+
 - **Free tier is a flat message count.** Easy first version. You may later
   want it to reset monthly instead of being lifetime — that's a small change
   to the `freeMessagesUsed` logic in `server.js`.
 
-## 5. The product itself
+## 6. The product itself
 
 The system prompt in `server.js` (`SYSTEM_PROMPT`) is the actual "brain" of
 the agent — its philosophy, the coaching framework it uses, and its tone.

@@ -159,6 +159,15 @@
   </form>
   <p class="auth-error" id="authError"></p>
   <p class="auth-toggle" id="authToggle">New here? <a id="authToggleLink">Create an account</a></p>
+  <p class="auth-toggle" id="forgotToggle"><a id="forgotToggleLink">Forgot password?</a></p>
+
+  <form class="auth-form hidden" id="forgotForm">
+    <p class="auth-sub" style="margin-bottom:12px;">Enter your email and we'll send you a link to reset your password.</p>
+    <input type="email" id="forgotEmail" placeholder="Email" required autocomplete="email">
+    <button type="submit" id="forgotSubmit">Send reset link</button>
+  </form>
+  <p class="auth-error hidden" id="forgotMsg"></p>
+  <p class="auth-toggle hidden" id="backToLogin"><a id="backToLoginLink">Back to log in</a></p>
 </div>
 
 <!-- APP -->
@@ -211,6 +220,58 @@ const authError = document.getElementById('authError');
 const authSubmit = document.getElementById('authSubmit');
 const authToggleLink = document.getElementById('authToggleLink');
 const authToggle = document.getElementById('authToggle');
+const forgotToggle = document.getElementById('forgotToggle');
+const forgotToggleLink = document.getElementById('forgotToggleLink');
+const forgotForm = document.getElementById('forgotForm');
+const forgotMsg = document.getElementById('forgotMsg');
+const forgotSubmit = document.getElementById('forgotSubmit');
+const backToLogin = document.getElementById('backToLogin');
+const backToLoginLink = document.getElementById('backToLoginLink');
+
+function showForgotPassword() {
+  authForm.classList.add('hidden');
+  authError.classList.add('hidden');
+  authToggle.classList.add('hidden');
+  forgotToggle.classList.add('hidden');
+  forgotForm.classList.remove('hidden');
+  backToLogin.classList.remove('hidden');
+}
+function showLogin() {
+  forgotForm.classList.add('hidden');
+  forgotMsg.classList.add('hidden');
+  backToLogin.classList.add('hidden');
+  authForm.classList.remove('hidden');
+  authError.classList.remove('hidden');
+  authToggle.classList.remove('hidden');
+  forgotToggle.classList.remove('hidden');
+}
+forgotToggleLink.addEventListener('click', showForgotPassword);
+backToLoginLink.addEventListener('click', showLogin);
+
+forgotForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const email = document.getElementById('forgotEmail').value.trim();
+  forgotSubmit.disabled = true;
+  forgotSubmit.textContent = 'Sending...';
+  try {
+    const res = await fetch(API + '/api/forgot-password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email }),
+    });
+    const data = await res.json();
+    forgotMsg.classList.remove('hidden');
+    forgotMsg.style.color = res.ok ? 'var(--moss)' : '#a14a3a';
+    forgotMsg.textContent = data.message || data.error || 'Something went wrong.';
+    forgotForm.classList.add('hidden');
+  } catch (err) {
+    forgotMsg.classList.remove('hidden');
+    forgotMsg.style.color = '#a14a3a';
+    forgotMsg.textContent = 'Could not reach the server.';
+  }
+  forgotSubmit.disabled = false;
+  forgotSubmit.textContent = 'Send reset link';
+});
 
 authToggleLink.addEventListener('click', () => {
   isSignupMode = !isSignupMode;
