@@ -51,11 +51,22 @@ app.post('/api/stripe-webhook', express.raw({ type: 'application/json' }), (req,
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
+  handleStripeEvent(event)
+    .then(() => res.json({ received: true }))
+    .catch((err) => {
+      console.error('Error handling Stripe webhook event:', err);
+      // We already have the event; tell Stripe we got it so it doesn't
+      // keep retrying forever, but log it so we notice the failure.
+      res.json({ received: true });
+    });
+});
+
+async function handleStripeEvent(event) {
   if (event.type === 'checkout.session.completed') {
     const session = event.data.object;
     const userId = session.client_reference_id;
     if (userId) {
-      db.updateUser(userId, {
+      await db.updateUser(userId, {
         isPro: true,
         stripeCustomerId: session.customer,
         stripeSubscriptionId: session.subscription,
@@ -65,17 +76,12 @@ app.post('/api/stripe-webhook', express.raw({ type: 'application/json' }), (req,
 
   if (event.type === 'customer.subscription.deleted') {
     const subscription = event.data.object;
-    const users = require('./db');
-    // find the user with this subscription id and revoke access
-    const all = JSON.parse(require('fs').readFileSync(path.join(__dirname, 'data', 'users.json'), 'utf-8')).users;
-    const match = all.find(u => u.stripeSubscriptionId === subscription.id);
+    const match = await db.findUserByStripeSubscriptionId(subscription.id);
     if (match) {
-      db.updateUser(match.id, { isPro: false });
+      await db.updateUser(match.id, { isPro: false });
     }
   }
-
-  res.json({ received: true });
-});
+}
 
 app.use(cors());
 app.use(express.json());
@@ -87,13 +93,13 @@ function signToken(user) {
   return jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: '30d' });
 }
 
-function authMiddleware(req, res, next) {
+async function authMiddleware(req, res, next) {
   const header = req.headers.authorization || '';
   const token = header.startsWith('Bearer ') ? header.slice(7) : null;
   if (!token) return res.status(401).json({ error: 'Not logged in.' });
   try {
     const payload = jwt.verify(token, JWT_SECRET);
-    const user = db.findUserById(payload.id);
+    const user = await db.findUserById(payload.id);
     if (!user) return res.status(401).json({ error: 'Account not found.' });
     req.user = user;
     next();
@@ -120,11 +126,11 @@ app.post('/api/signup', async (req, res) => {
   if (!email || !password || password.length < 8) {
     return res.status(400).json({ error: 'Email and an 8+ character password are required.' });
   }
-  if (db.findUserByEmail(email)) {
+  if (await db.findUserByEmail(email)) {
     return res.status(409).json({ error: 'An account with that email already exists.' });
   }
   const passwordHash = await bcrypt.hash(password, 10);
-  const user = db.createUser({
+  const user = await db.createUser({
     id: crypto.randomUUID(),
     email,
     passwordHash,
@@ -139,7 +145,7 @@ app.post('/api/signup', async (req, res) => {
 
 app.post('/api/login', async (req, res) => {
   const { email, password } = req.body;
-  const user = db.findUserByEmail(email || '');
+  const user = await db.findUserByEmail(email || '');
   if (!user) return res.status(401).json({ error: 'Incorrect email or password.' });
   const ok = await bcrypt.compare(password || '', user.passwordHash);
   if (!ok) return res.status(401).json({ error: 'Incorrect email or password.' });
@@ -246,7 +252,7 @@ app.post('/api/chat', authMiddleware, async (req, res) => {
     if (!isFirstMessage && !user.isPro) {
       updates_to_user.freeMessagesUsed = user.freeMessagesUsed + 1;
     }
-    const saved = db.updateUser(user.id, updates_to_user);
+    const saved = await db.updateUser(user.id, updates_to_user);
 
     res.json({
       reply: clean,

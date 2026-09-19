@@ -7,9 +7,8 @@ An adaptive AI life-navigation agent with accounts, a free tier, and a paywall.
 ```
 personal-os-app/
 ├── server.js          <- the whole backend: auth, chat, payments
-├── db.js              <- simple file-based "database" (swap for real DB later)
+├── db.js              <- Postgres database layer (accounts, conversations)
 ├── public/index.html  <- the whole frontend: login screen + chat UI
-├── data/users.json    <- created automatically, holds user accounts
 ├── .env.example       <- copy to .env and fill in real values
 └── package.json
 ```
@@ -33,6 +32,10 @@ cp .env.example .env
 Open `.env` and fill in:
 - `JWT_SECRET` — any long random string (e.g. run `openssl rand -hex 32`)
 - `ANTHROPIC_API_KEY` — from [console.anthropic.com](https://console.anthropic.com)
+- `DATABASE_URL` — a Postgres connection string. Locally, either run
+  Postgres on your own machine, or just point this at your Render Postgres
+  instance's **External Database URL** (found on its "Connections" tab)
+  while developing.
 
 Leave the Stripe values blank for now — the app works fine without them, it'll
 just say "Payments are not set up yet" if someone clicks Upgrade.
@@ -84,10 +87,6 @@ General steps (Render as the example):
 
 ## 4. Known limits worth knowing about (and fixing later, not day one)
 
-- **`data/users.json` is not a real database.** It's fine for your first
-  handful of users. Once you have real concurrent traffic, move to Postgres —
-  Render and Railway both offer one for free to start, and `db.js` is written
-  so only that one file needs to change.
 - **No "forgot password" flow yet.** Fine to skip for launch, add later.
 - **No rate limiting.** Someone could hammer `/api/chat` — add a package like
   `express-rate-limit` before a public launch.

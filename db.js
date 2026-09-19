@@ -1,64 +1,146 @@
 // db.js
 //
-// This is a deliberately simple "database": one JSON file on disk.
-// It's fine for building, testing, and even a small early launch.
-// Once you have real concurrent traffic, swap this for Postgres
-// (Supabase or Railway both give you one for free to start) --
-// every function below keeps the same shape (readUsers/writeUsers),
-// so the rest of the app doesn't need to change, just this file.
+// Real database, backed by Postgres (Render Postgres or any other Postgres
+// host). Replaces the old single-JSON-file version -- same function names
+// and shapes as before (findUserByEmail, findUserById, createUser,
+// updateUser), so server.js barely has to change.
+//
+// Everything here is async now (Postgres calls are never instant), so every
+// call site in server.js needs `await` in front of it. See server.js for
+// the updated call sites.
 
-const fs = require('fs');
-const path = require('path');
+const { Pool } = require('pg');
 
-const DB_PATH = path.join(__dirname, 'data', 'users.json');
-
-function ensureDbFile() {
-  const dataDir = path.join(__dirname, 'data');
-  if (!fs.existsSync(dataDir)) {
-    fs.mkdirSync(dataDir, { recursive: true });
-  }
-  if (!fs.existsSync(DB_PATH)) {
-    fs.writeFileSync(DB_PATH, JSON.stringify({ users: [] }, null, 2));
-  }
-}
-function readUsers() {
-  ensureDbFile();
-  const raw = fs.readFileSync(DB_PATH, 'utf-8');
-  return JSON.parse(raw).users;
+if (!process.env.DATABASE_URL) {
+  console.error('Missing DATABASE_URL in your .env file (or Render environment variables).');
+  process.exit(1);
 }
 
-function writeUsers(users) {
-  ensureDbFile();
-  fs.writeFileSync(DB_PATH, JSON.stringify({ users }, null, 2));
+// Render's internal Postgres connection doesn't need SSL; most external
+// Postgres hosts (and Render's *external* connection string) do. This
+// covers both without you having to think about it.
+const needsSSL = /render\.com|sslmode=require/.test(process.env.DATABASE_URL);
+
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: needsSSL ? { rejectUnauthorized: false } : false,
+});
+
+async function ensureSchema() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS users (
+      id UUID PRIMARY KEY,
+      email TEXT UNIQUE NOT NULL,
+      password_hash TEXT NOT NULL,
+      is_pro BOOLEAN NOT NULL DEFAULT false,
+      free_messages_used INTEGER NOT NULL DEFAULT 0,
+      profile JSONB NOT NULL DEFAULT '{}'::jsonb,
+      conversation JSONB NOT NULL DEFAULT '[]'::jsonb,
+      stripe_customer_id TEXT,
+      stripe_subscription_id TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
 }
 
-function findUserByEmail(email) {
-  return readUsers().find(u => u.email.toLowerCase() === email.toLowerCase());
+// Run once at startup. If this fails (bad connection string, DB not
+// reachable), we want the app to fail loudly instead of silently limping
+// along with no database.
+const schemaReady = ensureSchema().catch((err) => {
+  console.error('Failed to set up the database schema:', err.message);
+  process.exit(1);
+});
+
+function rowToUser(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    email: row.email,
+    passwordHash: row.password_hash,
+    isPro: row.is_pro,
+    freeMessagesUsed: row.free_messages_used,
+    profile: row.profile,
+    conversation: row.conversation,
+    stripeCustomerId: row.stripe_customer_id,
+    stripeSubscriptionId: row.stripe_subscription_id,
+    createdAt: row.created_at,
+  };
 }
 
-function findUserById(id) {
-  return readUsers().find(u => u.id === id);
+async function findUserByEmail(email) {
+  await schemaReady;
+  const { rows } = await pool.query('SELECT * FROM users WHERE lower(email) = lower($1)', [email]);
+  return rowToUser(rows[0]);
 }
 
-function createUser(user) {
-  const users = readUsers();
-  users.push(user);
-  writeUsers(users);
-  return user;
+async function findUserById(id) {
+  await schemaReady;
+  const { rows } = await pool.query('SELECT * FROM users WHERE id = $1', [id]);
+  return rowToUser(rows[0]);
 }
 
-function updateUser(id, updates) {
-  const users = readUsers();
-  const idx = users.findIndex(u => u.id === id);
-  if (idx === -1) return null;
-  users[idx] = { ...users[idx], ...updates };
-  writeUsers(users);
-  return users[idx];
+async function findUserByStripeSubscriptionId(subscriptionId) {
+  await schemaReady;
+  const { rows } = await pool.query('SELECT * FROM users WHERE stripe_subscription_id = $1', [subscriptionId]);
+  return rowToUser(rows[0]);
+}
+
+async function createUser(user) {
+  await schemaReady;
+  const { rows } = await pool.query(
+    `INSERT INTO users (id, email, password_hash, is_pro, free_messages_used, profile, conversation, created_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+     RETURNING *`,
+    [
+      user.id,
+      user.email,
+      user.passwordHash,
+      user.isPro,
+      user.freeMessagesUsed,
+      JSON.stringify(user.profile || {}),
+      JSON.stringify(user.conversation || []),
+      user.createdAt,
+    ]
+  );
+  return rowToUser(rows[0]);
+}
+
+async function updateUser(id, updates) {
+  await schemaReady;
+  const current = await findUserById(id);
+  if (!current) return null;
+  const merged = { ...current, ...updates };
+  const { rows } = await pool.query(
+    `UPDATE users SET
+       email = $2,
+       password_hash = $3,
+       is_pro = $4,
+       free_messages_used = $5,
+       profile = $6,
+       conversation = $7,
+       stripe_customer_id = $8,
+       stripe_subscription_id = $9
+     WHERE id = $1
+     RETURNING *`,
+    [
+      id,
+      merged.email,
+      merged.passwordHash,
+      merged.isPro,
+      merged.freeMessagesUsed,
+      JSON.stringify(merged.profile || {}),
+      JSON.stringify(merged.conversation || []),
+      merged.stripeCustomerId || null,
+      merged.stripeSubscriptionId || null,
+    ]
+  );
+  return rowToUser(rows[0]);
 }
 
 module.exports = {
   findUserByEmail,
   findUserById,
+  findUserByStripeSubscriptionId,
   createUser,
   updateUser,
 };
