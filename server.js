@@ -22,6 +22,15 @@ const { Resend } = require('resend');
 const db = require('./db');
 
 const app = express();
+// Render (like most hosts) puts your app behind its own proxy, so every
+// request arrives with an X-Forwarded-For header set by Render, not by the
+// visitor. Without this line, Express doesn't trust that header, which
+// broke express-rate-limit's ability to identify who's making a request
+// (see the ERR_ERL_UNEXPECTED_X_FORWARDED_FOR crash this fixes). "1" means
+// trust exactly one hop of proxy -- i.e. Render itself -- which is the
+// correct, safe setting here (as opposed to blindly trusting the header no
+// matter how many proxies forwarded it).
+app.set('trust proxy', 1);
 const PORT = process.env.PORT || 3000;
 
 const JWT_SECRET = process.env.JWT_SECRET;
