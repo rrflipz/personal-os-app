@@ -88,8 +88,6 @@ General steps (Render as the example):
 ## 4. Known limits worth knowing about (and fixing later, not day one)
 
 - **No "forgot password" flow yet.** Fine to skip for launch, add later.
-- **No rate limiting.** Someone could hammer `/api/chat` — add a package like
-  `express-rate-limit` before a public launch.
 - **Free tier is a flat message count.** Easy first version. You may later
   want it to reset monthly instead of being lifetime — that's a small change
   to the `freeMessagesUsed` logic in `server.js`.

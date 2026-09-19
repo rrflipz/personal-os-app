@@ -17,6 +17,7 @@ const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const path = require('path');
 const Stripe = require('stripe');
+const rateLimit = require('express-rate-limit');
 const db = require('./db');
 
 const app = express();
@@ -87,6 +88,34 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
+// ---------- Rate limiting ----------
+// Without this, one script (or one person hammering their browser's
+// refresh/send button) can spam the Anthropic API through our server --
+// that runs up your API bill fast, and unusual traffic patterns like that
+// are exactly what got the Anthropic account flagged before.
+
+// Chat is the expensive one (it calls Anthropic). Keyed per logged-in user
+// so one account being abusive doesn't block anyone else.
+const chatLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 20, // 20 messages/minute is generous for a real conversation, not for a script
+  keyGenerator: (req) => (req.user ? req.user.id : req.ip),
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "You're sending messages a little too fast. Give it a moment and try again." },
+});
+
+// Signup/login are cheap to run but are exactly what a bot would hammer to
+// spam-create accounts or brute-force a password. Keyed per IP since there's
+// no logged-in user yet at this point.
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many attempts. Please wait a few minutes and try again.' },
+});
+
 // ---------- Auth helpers ----------
 
 function signToken(user) {
@@ -121,7 +150,7 @@ function publicUser(user) {
 
 // ---------- Auth routes ----------
 
-app.post('/api/signup', async (req, res) => {
+app.post('/api/signup', authLimiter, async (req, res) => {
   const { email, password } = req.body;
   if (!email || !password || password.length < 8) {
     return res.status(400).json({ error: 'Email and an 8+ character password are required.' });
@@ -143,7 +172,7 @@ app.post('/api/signup', async (req, res) => {
   res.json({ token: signToken(user), user: publicUser(user) });
 });
 
-app.post('/api/login', async (req, res) => {
+app.post('/api/login', authLimiter, async (req, res) => {
   const { email, password } = req.body;
   const user = await db.findUserByEmail(email || '');
   if (!user) return res.status(401).json({ error: 'Incorrect email or password.' });
@@ -197,7 +226,7 @@ function extractProfileBlock(text) {
   return { clean, updates };
 }
 
-app.post('/api/chat', authMiddleware, async (req, res) => {
+app.post('/api/chat', authMiddleware, chatLimiter, async (req, res) => {
   const user = req.user;
   const { message } = req.body;
 
