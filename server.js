@@ -42,6 +42,18 @@ const CLIENT_URL = process.env.CLIENT_URL || `http://localhost:${PORT}`;
 const FREE_MESSAGE_LIMIT = parseInt(process.env.FREE_MESSAGE_LIMIT || '15', 10);
 const RESEND_API_KEY = process.env.RESEND_API_KEY;
 const EMAIL_FROM = process.env.EMAIL_FROM || 'Personal OS <noreply@getpersonalos.com>';
+// How many past messages we actually replay to Claude on every turn. Without
+// a cap, a long-running (paying, long-term) user's conversation grows
+// forever, and every single message re-sends the entire history -- so cost
+// AND latency creep up the longer someone uses the app, which is exactly
+// backwards for a subscription product. 40 messages is ~20 back-and-forth
+// exchanges, which is generous short-term context without unbounded cost.
+const MAX_API_HISTORY = parseInt(process.env.MAX_API_HISTORY || '40', 10);
+// How many messages we keep in the database / send back to the frontend at
+// all. Much larger than MAX_API_HISTORY -- this isn't a cost control, it's
+// just a ceiling so a multi-year account's conversation column (and the
+// page load that reads it) can't grow completely without bound.
+const MAX_STORED_HISTORY = parseInt(process.env.MAX_STORED_HISTORY || '300', 10);
 
 if (!JWT_SECRET || !ANTHROPIC_API_KEY) {
   console.error('Missing JWT_SECRET or ANTHROPIC_API_KEY in your .env file. See .env.example.');
@@ -313,6 +325,20 @@ After you have learned something new and durable about the person in a turn, app
 <<<PROFILE>>>{"archetype":"...", "learning":"...", "strengths":"...", "focus":"..."}<<<END>>>
 Only include the keys you have new information for — omit keys you have nothing new to say about. Keep each value under 12 words, written as a plain descriptive phrase (not a full sentence, no leading capital needed). This block is stripped before the person sees your message, so it must add nothing they need to read — never reference it in your visible text. Do not include this block if you learned nothing new that turn.`;
 
+// Turns the tracked profile into a short paragraph the model can read as
+// standing context. This is what lets us safely trim old messages out of
+// what we send to Claude (see MAX_API_HISTORY) without the person feeling
+// like the app "forgot" them -- the durable facts survive in the profile
+// even after the raw messages they came from have aged out.
+function profileContext(profile) {
+  if (!profile) return '';
+  const lines = Object.entries(profile)
+    .filter(([, v]) => v)
+    .map(([k, v]) => `- ${k}: ${v}`);
+  if (lines.length === 0) return '';
+  return `\n\nWHAT YOU'VE ALREADY LEARNED ABOUT THIS PERSON (from earlier in your relationship with them, possibly before the visible messages below):\n${lines.join('\n')}\nUse this naturally -- don't re-ask what you already know here, and never reference this note directly.`;
+}
+
 function extractProfileBlock(text) {
   const match = text.match(/<<<PROFILE>>>([\s\S]*?)<<<END>>>/);
   if (!match) return { clean: text, updates: null };
@@ -342,7 +368,11 @@ app.post('/api/chat', authMiddleware, chatLimiter, async (req, res) => {
   const userTurn = isFirstMessage
     ? { role: 'user', content: '[Begin the session. Open the conversation yourself as instructed.]' }
     : { role: 'user', content: message };
-  const messagesToSend = [...conversation, userTurn];
+  // Full history (plus this new turn) is what we store; only the recent
+  // slice of it is what we actually pay to send to Claude (see
+  // MAX_API_HISTORY above).
+  const fullHistoryWithTurn = [...conversation, userTurn];
+  const apiMessages = [...conversation.slice(-MAX_API_HISTORY), userTurn];
 
   try {
     const response = await fetch('https://api.anthropic.com/v1/messages', {
@@ -355,8 +385,8 @@ app.post('/api/chat', authMiddleware, chatLimiter, async (req, res) => {
       body: JSON.stringify({
         model: 'claude-sonnet-4-6',
         max_tokens: 1000,
-        system: SYSTEM_PROMPT,
-        messages: messagesToSend,
+        system: SYSTEM_PROMPT + profileContext(user.profile),
+        messages: apiMessages,
       }),
     });
 
@@ -372,7 +402,11 @@ app.post('/api/chat', authMiddleware, chatLimiter, async (req, res) => {
     const { clean, updates } = extractProfileBlock(rawText);
 
     const updatedProfile = updates ? { ...user.profile, ...updates } : user.profile;
-    const updatedConversation = [...messagesToSend, { role: 'assistant', content: rawText }];
+    // Cap what we actually store too -- not for cost (that's MAX_API_HISTORY
+    // above), just so a years-old account's conversation can't grow the
+    // database row (and the /api/me payload) without any ceiling at all.
+    const fullConversation = [...fullHistoryWithTurn, { role: 'assistant', content: rawText }];
+    const updatedConversation = fullConversation.slice(-MAX_STORED_HISTORY);
 
     const updates_to_user = {
       conversation: updatedConversation,

@@ -98,13 +98,31 @@ Forgotten-password emails go out through [Resend](https://resend.com). You need:
 Without `RESEND_API_KEY` set, the app doesn't crash -- it just logs the reset
 link to the console instead of emailing it, which is handy for local testing.
 
-## 5. Known limits worth knowing about (and fixing later, not day one)
+## 5. Conversation cost/length limits
+
+Every chat message re-sends the conversation so far to Claude, which is what
+lets it hold a coherent, ongoing relationship with each person. Left
+completely uncapped, that means a long-time user's history (and your API
+bill for their messages) grows forever. Two env vars control this, both
+optional with sane defaults (see `.env.example`):
+
+- `MAX_API_HISTORY` — how many past messages actually get sent to Claude on
+  each turn. Older messages roll off, but the person isn't "forgotten": the
+  durable facts the agent has picked up about them (their archetype,
+  learning style, strengths, current focus -- the same data driving the
+  "System profile" panel) get folded into the system prompt on every
+  request, so continuity survives even once the raw messages age out.
+- `MAX_STORED_HISTORY` — a much larger ceiling on how many messages get kept
+  in the database / shown in the chat window at all, just so the column
+  can't grow completely without bound over years of use.
+
+## 6. Known limits worth knowing about (and fixing later, not day one)
 
 - **Free tier is a flat message count.** Easy first version. You may later
   want it to reset monthly instead of being lifetime — that's a small change
   to the `freeMessagesUsed` logic in `server.js`.
 
-## 6. The product itself
+## 7. The product itself
 
 The system prompt in `server.js` (`SYSTEM_PROMPT`) is the actual "brain" of
 the agent — its philosophy, the coaching framework it uses, and its tone.
