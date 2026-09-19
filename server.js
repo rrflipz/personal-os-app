@@ -212,7 +212,14 @@ app.post('/api/forgot-password', authLimiter, async (req, res) => {
   const { email } = req.body;
   const genericResponse = { message: "If an account exists for that email, we've sent a reset link." };
 
+  // Loud, unconditional log so this whole flow is traceable in Render's
+  // logs no matter which branch below ends up firing -- this line alone
+  // tells you: the request arrived, what email was looked up, and whether
+  // RESEND_API_KEY is actually configured in this environment.
+  console.log(`[forgot-password] request for "${email}" -- resend configured: ${!!resend}`);
+
   const user = email ? await db.findUserByEmail(email) : null;
+  console.log(`[forgot-password] account found for "${email}": ${!!user}`);
   // Deliberately respond the same way whether or not the account exists --
   // otherwise this endpoint becomes a way for anyone to check which emails
   // have accounts on your app.
@@ -234,7 +241,7 @@ app.post('/api/forgot-password', authLimiter, async (req, res) => {
   }
 
   try {
-    await resend.emails.send({
+    const sendResult = await resend.emails.send({
       from: EMAIL_FROM,
       to: user.email,
       subject: 'Reset your Personal OS password',
@@ -244,6 +251,7 @@ app.post('/api/forgot-password', authLimiter, async (req, res) => {
         <p>If you didn't request this, you can safely ignore this email -- your password won't change.</p>
       `,
     });
+    console.log('[forgot-password] Resend response:', JSON.stringify(sendResult));
   } catch (err) {
     console.error('Failed to send password reset email:', err);
     // Still return the generic success response -- we don't want to leak
